@@ -20,8 +20,7 @@ import (
 	"fmt"
 	"reflect"
 
-	"k8s.io/klog"
-	"k8s.io/kubernetes/pkg/scheduler/profile"
+	"k8s.io/klog/v2"
 
 	v1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -32,6 +31,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/kubernetes/pkg/features"
 	"k8s.io/kubernetes/pkg/scheduler/internal/queue"
+	"k8s.io/kubernetes/pkg/scheduler/profile"
 )
 
 func (sched *Scheduler) onPvAdd(obj interface{}) {
@@ -243,6 +243,15 @@ func (sched *Scheduler) updatePodInCache(oldObj, newObj interface{}) {
 		return
 	}
 
+	// A Pod delete event followed by an immediate Pod add event may be merged
+	// into a Pod update event. In this case, we should invalidate the old Pod, and
+	// then add the new Pod.
+	if oldPod.UID != newPod.UID {
+		sched.deletePodFromCache(oldObj)
+		sched.addPodToCache(newObj)
+		return
+	}
+
 	// NOTE: Updates must be written to scheduler cache before invalidating
 	// equivalence cache, because we could snapshot equivalence cache after the
 	// invalidation and then snapshot the cache itself. If the cache is
@@ -297,8 +306,8 @@ func responsibleForPod(pod *v1.Pod, profiles profile.Map) bool {
 // skipPodUpdate checks whether the specified pod update should be ignored.
 // This function will return true if
 //   - The pod has already been assumed, AND
-//   - The pod has only its ResourceVersion, Spec.NodeName and/or Annotations
-//     updated.
+//   - The pod has only its ResourceVersion, Spec.NodeName, Annotations,
+//     ManagedFields, Finalizers and/or Conditions updated.
 func (sched *Scheduler) skipPodUpdate(pod *v1.Pod) bool {
 	// Non-assumed pods should never be skipped.
 	isAssumed, err := sched.SchedulerCache.IsAssumedPod(pod)
@@ -334,6 +343,10 @@ func (sched *Scheduler) skipPodUpdate(pod *v1.Pod) bool {
 		// Same as above, when annotations are modified with ServerSideApply,
 		// ManagedFields may also change and must be excluded
 		p.ManagedFields = nil
+		// The following might be changed by external controllers, but they don't
+		// affect scheduling decisions.
+		p.Finalizers = nil
+		p.Status.Conditions = nil
 		return p
 	}
 	assumedPodCopy, podCopy := f(assumedPod), f(pod)

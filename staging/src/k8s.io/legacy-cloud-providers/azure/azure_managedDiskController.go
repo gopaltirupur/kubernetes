@@ -33,7 +33,7 @@ import (
 	kwait "k8s.io/apimachinery/pkg/util/wait"
 	cloudvolume "k8s.io/cloud-provider/volume"
 	volumehelpers "k8s.io/cloud-provider/volume/helpers"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 )
 
 const (
@@ -346,6 +346,13 @@ func (c *Cloud) GetAzureDiskLabels(diskURI string) (map[string]string, error) {
 		return nil, err
 	}
 
+	labels := map[string]string{
+		v1.LabelZoneRegion: c.Location,
+	}
+	// no azure credential is set, return nil
+	if c.DisksClient == nil {
+		return labels, nil
+	}
 	// Get information of the disk.
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
@@ -358,7 +365,7 @@ func (c *Cloud) GetAzureDiskLabels(diskURI string) (map[string]string, error) {
 	// Check whether availability zone is specified.
 	if disk.Zones == nil || len(*disk.Zones) == 0 {
 		klog.V(4).Infof("Azure disk %q is not zoned", diskName)
-		return nil, nil
+		return labels, nil
 	}
 
 	zones := *disk.Zones
@@ -369,9 +376,6 @@ func (c *Cloud) GetAzureDiskLabels(diskURI string) (map[string]string, error) {
 
 	zone := c.makeZone(c.Location, zoneID)
 	klog.V(4).Infof("Got zone %q for Azure disk %q", zone, diskName)
-	labels := map[string]string{
-		v1.LabelZoneRegion:        c.Location,
-		v1.LabelZoneFailureDomain: zone,
-	}
+	labels[v1.LabelZoneFailureDomain] = zone
 	return labels, nil
 }

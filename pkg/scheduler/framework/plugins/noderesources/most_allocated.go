@@ -22,6 +22,8 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/kubernetes/pkg/scheduler/apis/config"
+	"k8s.io/kubernetes/pkg/scheduler/apis/config/validation"
 	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
 )
 
@@ -61,26 +63,41 @@ func (ma *MostAllocated) ScoreExtensions() framework.ScoreExtensions {
 }
 
 // NewMostAllocated initializes a new plugin and returns it.
-func NewMostAllocated(_ runtime.Object, h framework.FrameworkHandle) (framework.Plugin, error) {
+func NewMostAllocated(maArgs runtime.Object, h framework.FrameworkHandle) (framework.Plugin, error) {
+	args, ok := maArgs.(*config.NodeResourcesMostAllocatedArgs)
+	if !ok {
+		return nil, fmt.Errorf("want args to be of type NodeResourcesMostAllocatedArgs, got %T", args)
+	}
+
+	if err := validation.ValidateNodeResourcesMostAllocatedArgs(args); err != nil {
+		return nil, err
+	}
+
+	resToWeightMap := make(resourceToWeightMap)
+	for _, resource := range (*args).Resources {
+		resToWeightMap[v1.ResourceName(resource.Name)] = resource.Weight
+	}
+
 	return &MostAllocated{
 		handle: h,
 		resourceAllocationScorer: resourceAllocationScorer{
-			MostAllocatedName,
-			mostResourceScorer,
-			defaultRequestedRatioResources,
+			Name:                MostAllocatedName,
+			scorer:              mostResourceScorer(resToWeightMap),
+			resourceToWeightMap: resToWeightMap,
 		},
 	}, nil
 }
 
-func mostResourceScorer(requested, allocable resourceToValueMap, includeVolumes bool, requestedVolumes int, allocatableVolumes int) int64 {
-	var nodeScore, weightSum int64
-	for resource, weight := range defaultRequestedRatioResources {
-		resourceScore := mostRequestedScore(requested[resource], allocable[resource])
-		nodeScore += resourceScore * weight
-		weightSum += weight
+func mostResourceScorer(resToWeightMap resourceToWeightMap) func(requested, allocable resourceToValueMap, includeVolumes bool, requestedVolumes int, allocatableVolumes int) int64 {
+	return func(requested, allocable resourceToValueMap, includeVolumes bool, requestedVolumes int, allocatableVolumes int) int64 {
+		var nodeScore, weightSum int64
+		for resource, weight := range resToWeightMap {
+			resourceScore := mostRequestedScore(requested[resource], allocable[resource])
+			nodeScore += resourceScore * weight
+			weightSum += weight
+		}
+		return (nodeScore / weightSum)
 	}
-	return (nodeScore / weightSum)
-
 }
 
 // The used capacity is calculated on a scale of 0-MaxNodeScore (MaxNodeScore is
